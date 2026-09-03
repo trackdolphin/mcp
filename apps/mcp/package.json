@@ -24,7 +24,7 @@
     "esbuild": "0.25.10",
     "@trackdolphin/openapi-client": "workspace:*"
   },
-  "description": "MCP-Server für Trackdolphin: Server-Side-Tracking als Werkzeuge für Claude, Cursor und andere Agenten.",
+  "description": "MCP server for Trackdolphin: server-side conversion tracking as tools for Claude, Cursor and other AI agents",
   "license": "MIT",
   "homepage": "https://trackdolphin.com/docs/mcp",
   "repository": {

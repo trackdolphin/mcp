@@ -20,7 +20,7 @@
     "esbuild": "0.25.10",
     "@trackdolphin/openapi-client": "workspace:*"
   },
-  "description": "Trackdolphin auf der Kommandozeile: jeder API-Endpunkt ein Befehl, abgeleitet aus der OpenAPI-Beschreibung.",
+  "description": "Trackdolphin on the command line: every API endpoint is a command, derived from the OpenAPI description",
   "license": "MIT",
   "homepage": "https://trackdolphin.com/docs/cli",
   "repository": {
