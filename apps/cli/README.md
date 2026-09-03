@@ -51,10 +51,10 @@ npx @trackdolphin/cli kpis "$SHOP" | jq '.purchases, .revenue'
 ## How it works
 
 The command list is not maintained by hand. It is derived from the OpenAPI
-description of the Trackdolphin API — currently **51 operations** across shops,
-tracking health, KPIs, daily events, channels, pages, funnel, event types,
-onboarding, connections, cohorts, imports and API keys. A new endpoint is a new
-command the same day.
+description of the Trackdolphin API — today that is **more than 50 operations**
+across shops, tracking health, KPIs, daily events, channels, pages, funnel,
+event types, onboarding, connections, cohorts, imports and API keys. A new
+endpoint is a new command the same day.
 
 ## Configuration
 

@@ -48,10 +48,10 @@ Once connected, these are ordinary questions for your agent:
 ## How it works
 
 The server holds no hand-written tool list. On start it fetches the OpenAPI
-description of the Trackdolphin API and derives one tool per operation —
-currently **51 operations**, covering shops, tracking health, KPIs, daily
-events, channels, pages, funnel, event types, onboarding, connections, cohorts,
-imports and API keys.
+description of the Trackdolphin API and derives one tool per operation — today
+that is **more than 50 operations**, covering shops, tracking health, KPIs,
+daily events, channels, pages, funnel, event types, onboarding, connections,
+cohorts, imports and API keys.
 
 That is the point of API-first: a new endpoint is a new tool the same day, with
 no second list to keep in sync and no chance of the two drifting apart.
