@@ -50,5 +50,9 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "author": {
+    "name": "Trackdolphin",
+    "url": "https://trackdolphin.com"
   }
 }
