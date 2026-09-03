@@ -1,0 +1,1 @@
+{ "extends": "@trackdolphin/tsconfig/lib.json", "include": ["src"] }
