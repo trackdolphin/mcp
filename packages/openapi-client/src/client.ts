@@ -1,5 +1,21 @@
 import { buildRequest, type OpenApiDocument } from "./operations.ts";
 
+/**
+ * Meldung für HTTP 401, einheitlich für Kommandozeile und MCP-Server.
+ *
+ * Beide melden sich ausschließlich mit einem API-Schlüssel an, nie mit einer
+ * Browser-Sitzung — das Backend unterscheidet das zwar selbst schon (siehe
+ * SessionGuard) und formuliert für einen unbekannten Schlüssel bereits
+ * passend, aber verlässt man sich auf dessen Freitext, wandert ein
+ * missverständlicher Satz wie „Sitzung abgelaufen — bitte neu anmelden.“
+ * unverändert durch, sobald das Backend aus irgendeinem Grund den falschen
+ * Zweig nimmt oder gar keinen `message`-Text mitschickt. Da hier der Zweig
+ * ohnehin feststeht, wird die Meldung bei 401 lieber fest vorgegeben statt
+ * durchgereicht.
+ */
+export const API_KEY_UNAUTHORIZED_MESSAGE =
+  "Der Schlüssel ist ungültig oder wurde widerrufen. Einen neuen erzeugst du im Dashboard unter Einstellungen → API.";
+
 export interface ClientOptions {
   baseUrl: string;
   token: string;
@@ -63,11 +79,13 @@ export async function call(
   }
 
   const message =
-    data && typeof data === "object" && typeof (data as { message?: unknown }).message === "string"
-      ? (data as { message: string }).message
-      : res.ok
-        ? ""
-        : `HTTP ${res.status}`;
+    res.status === 401
+      ? API_KEY_UNAUTHORIZED_MESSAGE
+      : data && typeof data === "object" && typeof (data as { message?: unknown }).message === "string"
+        ? (data as { message: string }).message
+        : res.ok
+          ? ""
+          : `HTTP ${res.status}`;
 
   return { ok: res.ok, status: res.status, data, message };
 }

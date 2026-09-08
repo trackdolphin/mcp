@@ -21,6 +21,10 @@ function fail(message: string): never {
 }
 
 function printHelp(spec: OpenApiDocument): void {
+  // Vorgabe schließt Auth-Endpunkte aus (siehe isAuthOperation in
+  // @trackdolphin/openapi-client) — die Hilfe soll kein Rauschen zeigen. Wer
+  // den Befehlsnamen dennoch kennt, kann ihn unten trotzdem aufrufen: Die
+  // Befehlsauflösung selbst arbeitet mit der vollen Liste.
   const tools = toolsFromOpenApi(spec);
   const rows = tools
     .map((t) => ({ command: toCommandName(t.name), description: t.description.split(" — ")[0] ?? "" }))
@@ -64,7 +68,10 @@ if (!parsed.command || parsed.command === "help" || parsed.args.help) {
   process.exit(0);
 }
 
-const operationIds = toolsFromOpenApi(spec).map((t) => t.name);
+// Volle Liste, Auth-Endpunkte eingeschlossen: Nur die Hilfe (oben) blendet
+// sie aus, der Aufruf per Namen bleibt möglich — „wer den Befehl kennt, darf
+// ihn weiter benutzen".
+const operationIds = toolsFromOpenApi(spec, { includeAuth: true }).map((t) => t.name);
 const operationId = fromCommandName(parsed.command, operationIds);
 if (!operationId) {
   const known = operationIds.map(toCommandName).sort();

@@ -48,5 +48,8 @@
   "author": {
     "name": "Trackdolphin",
     "url": "https://trackdolphin.com"
+  },
+  "bugs": {
+    "url": "https://github.com/trackdolphin/mcp/issues"
   }
 }

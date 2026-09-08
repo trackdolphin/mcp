@@ -40,12 +40,61 @@ const spec: OpenApiDocument = {
         },
       },
     },
+    "/api/shops/{shopId}/keys/{keyId}": {
+      delete: {
+        operationId: "revokeApiKey",
+        summary: "Schlüssel widerrufen",
+        parameters: [
+          { name: "shopId", in: "path", required: true, schema: { type: "string" } },
+          { name: "keyId", in: "path", required: true, schema: { type: "string" } },
+        ],
+      },
+    },
+    "/api/auth/password-reset/request": {
+      post: {
+        operationId: "requestPasswordReset",
+        summary: "Passwort-Reset anfordern",
+        tags: ["Authentication"],
+      },
+    },
+    "/api/auth/sso/exchange": {
+      post: {
+        // Tag fehlt absichtlich in diesem Testfall — der Pfad allein muss
+        // reichen, sonst filtert eine Spec mit lückenhaften Tags nicht.
+        operationId: "exchangeSsoCode",
+        summary: "SSO-Code eintauschen",
+      },
+    },
   },
 };
 
-test("jede Operation wird zu einem Werkzeug", () => {
+test("jede Operation wird zu einem Werkzeug — Auth-Endpunkte ausgenommen", () => {
   const tools = toolsFromOpenApi(spec);
-  assert.deepEqual(tools.map((t) => t.name).sort(), ["getShopKpis", "listShops", "startShopImport"]);
+  assert.deepEqual(tools.map((t) => t.name).sort(), ["getShopKpis", "listShops", "revokeApiKey", "startShopImport"]);
+});
+
+test("Auth-Endpunkte fehlen unabhängig davon, ob sie getaggt sind", () => {
+  // requestPasswordReset trägt das Tag „Authentication“, exchangeSsoCode
+  // absichtlich nicht — beide müssen trotzdem draußen bleiben, weil der
+  // Pfad „/api/auth/“ als Rückfallebene greift.
+  const names = toolsFromOpenApi(spec).map((t) => t.name);
+  assert.ok(!names.includes("requestPasswordReset"));
+  assert.ok(!names.includes("exchangeSsoCode"));
+});
+
+test("includeAuth: true nimmt Auth-Endpunkte mit auf — für die Befehlsauflösung der Kommandozeile", () => {
+  const names = toolsFromOpenApi(spec, { includeAuth: true }).map((t) => t.name);
+  assert.ok(names.includes("requestPasswordReset"));
+  assert.ok(names.includes("exchangeSsoCode"));
+  assert.equal(names.length, 6);
+});
+
+test("buildRequest kennt Auth-Endpunkte trotzdem — nur die Auflistung filtert, nicht die Ausführung", () => {
+  // Die Kommandozeile blendet requestPasswordReset nur aus der Hilfe aus;
+  // wer den Namen kennt, darf ihn weiter aufrufen.
+  const req = buildRequest(spec, "requestPasswordReset", {}, "https://api.test");
+  assert.equal(req.method, "POST");
+  assert.equal(req.url, "https://api.test/api/auth/password-reset/request");
 });
 
 test("Werkzeugbeschreibung führt Zusammenfassung und Erklärung zusammen", () => {
@@ -116,4 +165,17 @@ test("Anfrage: fehlender Pflichtparameter wird benannt", () => {
     () => buildRequest(spec, "getShopKpis", {}, "https://api.test"),
     /shopId/,
   );
+});
+
+test("Annotationen kommen aus der HTTP-Methode: GET liest, DELETE zerstört, POST ist nicht wiederholbar", () => {
+  const by = Object.fromEntries(toolsFromOpenApi(spec).map((t) => [t.name, t.annotations]));
+  assert.deepEqual(by.getShopKpis, { readOnlyHint: true, destructiveHint: false, idempotentHint: true });
+  assert.deepEqual(by.startShopImport, { readOnlyHint: false, destructiveHint: false, idempotentHint: false });
+  assert.deepEqual(by.revokeApiKey, { readOnlyHint: false, destructiveHint: true, idempotentHint: true });
+});
+
+test("jedes Werkzeug trägt Annotationen — ein Client soll nie raten müssen", () => {
+  for (const t of toolsFromOpenApi(spec)) {
+    assert.equal(typeof t.annotations.readOnlyHint, "boolean", t.name);
+  }
 });

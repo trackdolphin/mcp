@@ -7,6 +7,7 @@
   },
   "scripts": {
     "start": "tsx src/index.ts",
+    "start:http": "tsx src/http.ts",
     "test": "echo 'Logik liegt in @trackdolphin/openapi-client'",
     "typecheck": "tsc --noEmit",
     "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --external:@modelcontextprotocol/sdk --external:zod --banner:js='#!/usr/bin/env node' --outfile=dist/index.js && chmod +x dist/index.js",
@@ -54,5 +55,8 @@
   "author": {
     "name": "Trackdolphin",
     "url": "https://trackdolphin.com"
+  },
+  "bugs": {
+    "url": "https://github.com/trackdolphin/mcp/issues"
   }
 }

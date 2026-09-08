@@ -1,19 +1,19 @@
 # syntax=docker/dockerfile:1
 # ───────────────────────────────────────────────────────────────────────────
-# Trackdolphin · MCP-Server (stdio — KEIN Serverdienst)
+# Trackdolphin · MCP-Server (gehosteter Weg — Streamable HTTP)
 #
-# ACHTUNG — dieser Dienst gehört NICHT als Dauer-App nach Coolify.
-# Der MCP-Server spricht ausschließlich über stdio (StdioServerTransport in
-# src/index.ts): Er liest Anfragen von der Standardeingabe und antwortet auf
-# der Standardausgabe. In einem Container ohne Gegenüber ist die Eingabe
-# sofort geschlossen — der Prozess hätte niemanden, mit dem er redet, und
-# nichts, worauf er horcht. Es gibt keinen Port, den man veröffentlichen
-# könnte.
-#
-# Wofür dieses Image dann? Für den Aufruf mit angehängter Eingabe, etwa
-# `docker run -i --rm trackdolphin-mcp` aus einem MCP-Client heraus. Sobald
-# der Server einen HTTP-/SSE-Transport bekommt, wird hier ein EXPOSE samt
-# Healthcheck ergänzt und der Dienst kann in projects.json aufgenommen werden.
+# Dieses Image startet den HTTP-Weg (src/http.ts), nicht den stdio-Weg
+# (src/index.ts). Beide teilen sich denselben Kern (src/core.ts); der
+# Unterschied ist nur, woher Transport und Schlüssel kommen:
+#   - stdio (src/index.ts): EIN TRACKDOLPHIN_TOKEN pro Prozess, gestartet vom
+#     MCP-Client selbst (`npx @trackdolphin/mcp`) — dafuer gibt es kein
+#     Docker-Image, `docker run -i` ohne Gegenüber haette niemanden, mit dem
+#     der Prozess redet.
+#   - HTTP (src/http.ts, dieses Image): EIN Prozess fuer alle Kundinnen, der
+#     Schlüssel kommt mit jeder Anfrage im Authorization-Header und wird nur
+#     durchgereicht, nie im Prozess gehalten — siehe die Kommentare in
+#     src/http.ts. Deshalb hoert dieser Dienst auf einen Port und gehoert
+#     als Dauer-App nach Coolify, im Gegensatz zum stdio-Weg.
 #
 # Muster fuer alle Dienste dieses Repos: turbo prune → pnpm install →
 # ausgeduennter Arbeitsbereich als Laufzeit. Einen neuen Dienst hinzufuegen
@@ -64,14 +64,11 @@ COPY --from=pruned /src/out/full/ .
 # --- Stufe 3: Laufzeit -------------------------------------------------------
 FROM base AS runtime
 ENV NODE_ENV=production
-# ACHTUNG: Dieses Image ist NICHT fuer Coolify gedacht.
-#
-# Der MCP-Server spricht ueber stdio (StdioServerTransport, src/index.ts)
-# und braucht ein persoenliches TRACKDOLPHIN_TOKEN. Er ist ein Werkzeug,
-# das ein MCP-Client pro Sitzung startet — kein Dienst, der auf einen Port
-# hoert. Als Coolify-Anwendung endete er ohne stdin sofort und liefe in eine
-# Neustartschleife. Das Image existiert zum Verteilen an Kunden:
-#   docker run --rm -i -e TRACKDOLPHIN_TOKEN=… trackdolphin/mcp
+# PORT ist der Name, den Container-Plattformen setzen (siehe apps/collector).
+# TRACKDOLPHIN_URL zeigt auf das Backend, dessen OpenAPI-Beschreibung beim
+# Start einmal geladen wird — kein TRACKDOLPHIN_TOKEN hier: Dieser Prozess
+# hat keinen eigenen Schlüssel, jede Anfrage bringt ihren eigenen mit.
+ENV PORT=8788
 WORKDIR /opt/app
 COPY --chown=node:node --from=build /opt/app .
 WORKDIR /opt/app/apps/mcp
@@ -80,7 +77,12 @@ WORKDIR /opt/app/apps/mcp
 # Dateisystem des Containers gehoeren.
 USER node
 
-# Kein HEALTHCHECK: Dieser Prozess spricht ueber stdin/stdout und lebt genau
-# so lange wie sein Client. „Gesund" ist hier keine sinnvolle Frage.
+EXPOSE 8788
 
-CMD ["node", "--import", "tsx", "src/index.ts"]
+# busybox-wget statt curl — es ist ohnehin im Image, ein zusaetzliches Paket
+# waere nur mehr Angriffsflaeche fuer eine GET-Anfrage. /healthz antwortet
+# ohne Schlüssel (siehe src/http.ts) — der Healthcheck braucht keinen.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=5 \
+  CMD wget -q -O /dev/null http://127.0.0.1:8788/healthz || exit 1
+
+CMD ["node", "--import", "tsx", "src/http.ts"]
