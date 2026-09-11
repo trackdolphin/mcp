@@ -1,12 +1,24 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { createRequire } from "node:module";
 import {
   toolsFromOpenApi,
   buildRequest,
+  werkzeugeFuerZugang,
+  zugangsHinweis,
+  ACCESS_SCOPE_OPERATION,
   API_KEY_UNAUTHORIZED_MESSAGE,
+  type AccessScope,
   type OpenApiDocument,
   type McpTool,
 } from "@trackdolphin/openapi-client";
+
+/**
+ * Die Paketversion, zur Laufzeit aus package.json — im npm-Paket liegt sie
+ * neben dist/, im Container neben src/. Stand hier fest „0.1.0“, auch in 0.1.3:
+ * Ein Client konnte nicht erkennen, dass er einen veralteten Server startet.
+ */
+export const VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
 
 /**
  * Gemeinsamer Kern für stdio- und HTTP-Weg.
@@ -39,6 +51,40 @@ export interface ServerOptions {
   /** API-Schlüssel, mit dem Werkzeugaufrufe an das Backend gehen. */
   token: string;
   baseUrl: string;
+  /** Text für `instructions` im initialize — der Zugangssatz (siehe zugangsHinweis). */
+  instructions?: string;
+}
+
+export interface ZugangsStand {
+  scope: AccessScope | null;
+  /** Warum `scope` fehlt — steht dann im Hinweis an das Modell. */
+  fehler?: string;
+}
+
+/**
+ * Fragt `getAccessScope` mit dem Schlüssel ab. Scheitert das, startet der
+ * Server trotzdem — mit allen Werkzeugen und einem ehrlichen Satz, dass die
+ * Rechte unbekannt sind. Ein MCP-Server, der wegen einer Zusatzauskunft gar
+ * nicht startet, wäre schlechter als einer, der nicht filtert.
+ */
+export async function loadAccessScope(spec: OpenApiDocument, baseUrl: string, token: string): Promise<ZugangsStand> {
+  const vorhanden = Object.values(spec.paths ?? {}).some((ops) =>
+    Object.values(ops ?? {}).some((op) => op?.operationId === ACCESS_SCOPE_OPERATION),
+  );
+  if (!vorhanden) return { scope: null, fehler: "diese API-Version kennt getAccessScope noch nicht" };
+  try {
+    const req = buildRequest(spec, ACCESS_SCOPE_OPERATION, {}, baseUrl);
+    const res = await fetch(req.url, {
+      method: req.method,
+      headers: { Authorization: `Bearer ${token}`, "User-Agent": `trackdolphin-mcp/${VERSION}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.status === 401) return { scope: null, fehler: "API-Schlüssel unbekannt oder widerrufen" };
+    if (!res.ok) return { scope: null, fehler: `getAccessScope antwortete mit HTTP ${res.status}` };
+    return { scope: (await res.json()) as AccessScope };
+  } catch (e) {
+    return { scope: null, fehler: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /**
@@ -51,7 +97,7 @@ export interface ServerOptions {
  * Server-Instanz teilen.
  */
 export function createTrackdolphinServer(opts: ServerOptions): Server {
-  const { spec, tools, token, baseUrl } = opts;
+  const { spec, tools, token, baseUrl, instructions } = opts;
 
   // Werkzeugnamen, die tatsächlich angeboten werden — insbesondere ohne die
   // Auth-Endpunkte (siehe isAuthOperation in openapi-client). `buildRequest`
@@ -61,8 +107,8 @@ export function createTrackdolphinServer(opts: ServerOptions): Server {
   const toolNames = new Set(tools.map((t) => t.name));
 
   const server = new Server(
-    { name: "trackdolphin", version: "0.1.0" },
-    { capabilities: { tools: {} } },
+    { name: "trackdolphin", version: VERSION },
+    { capabilities: { tools: {} }, ...(instructions ? { instructions } : {}) },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
@@ -84,6 +130,7 @@ export function createTrackdolphinServer(opts: ServerOptions): Server {
         method: prepared.method,
         headers: {
           Authorization: `Bearer ${token}`,
+          "User-Agent": `trackdolphin-mcp/${VERSION}`,
           Accept: "application/json",
           ...(prepared.body ? { "Content-Type": "application/json" } : {}),
         },
@@ -123,5 +170,5 @@ export function createTrackdolphinServer(opts: ServerOptions): Server {
   return server;
 }
 
-export { toolsFromOpenApi };
-export type { OpenApiDocument, McpTool };
+export { toolsFromOpenApi, werkzeugeFuerZugang, zugangsHinweis };
+export type { OpenApiDocument, McpTool, AccessScope };

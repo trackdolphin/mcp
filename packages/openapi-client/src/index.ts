@@ -8,3 +8,5 @@
  */
 export * from "./operations.ts";
 export * from "./client.ts";
+export * from "./zugang.ts";
+export * from "./schema-pruefung.ts";

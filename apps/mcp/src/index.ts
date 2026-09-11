@@ -1,5 +1,13 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createTrackdolphinServer, loadSpec, toolsFromOpenApi } from "./core.ts";
+import {
+  VERSION,
+  createTrackdolphinServer,
+  loadAccessScope,
+  loadSpec,
+  toolsFromOpenApi,
+  werkzeugeFuerZugang,
+  zugangsHinweis,
+} from "./core.ts";
 
 /**
  * MCP-Server für Trackdolphin — stdio-Weg.
@@ -24,11 +32,25 @@ if (!TOKEN) {
 }
 
 const spec = await loadSpec(BASE_URL);
-// Auth-Endpunkte (Passwort-Reset, SSO, E-Mail-Bestätigung, Einladungen)
-// bleiben außen vor — siehe isAuthOperation in @trackdolphin/openapi-client.
-const tools = toolsFromOpenApi(spec);
+// Was dieser Schlüssel darf — beim Start einmal gefragt. Daraus entstehen der
+// Zugangssatz in `instructions` und, bei reinem Lesezugang, die Liste ohne
+// schreibende Werkzeuge (siehe zugang.ts in @trackdolphin/openapi-client).
+const zugang = await loadAccessScope(spec, BASE_URL, TOKEN);
+// Auth-Endpunkte (Passwort-Reset, SSO, E-Mail-Bestätigung) und alles, was
+// eine Anmeldung im Dashboard oder Staff verlangt, bleiben außen vor — ein
+// API-Schlüssel kann sie nie aufrufen (apiKeyOnly, x-trackdolphin-requires).
+const tools = werkzeugeFuerZugang(toolsFromOpenApi(spec, { apiKeyOnly: true }), zugang.scope);
 
-const server = createTrackdolphinServer({ spec, tools, token: TOKEN, baseUrl: BASE_URL });
+const server = createTrackdolphinServer({
+  spec,
+  tools,
+  token: TOKEN,
+  baseUrl: BASE_URL,
+  instructions: zugangsHinweis(zugang.scope, zugang.fehler),
+});
 
 await server.connect(new StdioServerTransport());
-process.stderr.write(`Trackdolphin MCP bereit — ${tools.length} Werkzeuge von ${BASE_URL}\n`);
+process.stderr.write(
+  `Trackdolphin MCP ${VERSION} bereit — ${tools.length} Werkzeuge von ${BASE_URL}; ` +
+  `Zugang: ${zugang.scope?.stufe ?? `unbekannt (${zugang.fehler})`}\n`,
+);

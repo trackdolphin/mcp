@@ -17,6 +17,7 @@ export interface OpenApiParameter {
 
 export interface OpenApiOperation {
   operationId?: string;
+  [extension: `x-${string}`]: unknown;
   summary?: string;
   description?: string;
   tags?: string[];
@@ -31,6 +32,12 @@ export interface OpenApiDocument {
   openapi: string;
   info: { title: string; version: string };
   paths: Record<string, Record<string, OpenApiOperation>>;
+  /**
+   * Ohne diese Sammlung ist die Beschreibung nur halb gelesen: NestJS/Swagger
+   * schreibt jeden benannten Rumpf als `$ref` hierher aus, statt ihn an der
+   * Operation einzubetten. Siehe `aufloese` unten.
+   */
+  components?: { schemas?: Record<string, Record<string, unknown>> };
 }
 
 /**
@@ -93,8 +100,149 @@ function annotationsFor(method: (typeof METHODS)[number]): McpToolAnnotations {
   };
 }
 
-function jsonBodySchema(op: OpenApiOperation): Record<string, unknown> | undefined {
-  return op.requestBody?.content?.["application/json"]?.schema;
+const SCHEMA_PRAEFIX = "#/components/schemas/";
+
+/**
+ * OpenAPI-Schema in reines JSON Schema übersetzen: `$ref` und `allOf` auf
+ * JEDER Ebene auflösen, `nullable` in die JSON-Schema-Schreibweise bringen.
+ *
+ * Der Fehler, den das behebt, war still und vollständig: NestJS schreibt
+ * jeden Rumpf, der aus einer DTO-Klasse kommt, als
+ * `{ "$ref": "#/components/schemas/StartLegalInterviewDto" }` aus. Wer nur
+ * `schema.properties` liest, findet dort NICHTS — und das Werkzeug kam ohne
+ * ein einziges Argument beim Modell an. Am 2026-09-09 betraf das **42 von 42**
+ * Operationen mit Rumpf, also jede schreibende Fähigkeit des Produkts.
+ *
+ * Die erste Korrektur löste nur die oberste Ebene und die direkten Felder auf.
+ * Ein Verweis in den Elementen einer Liste (`BackfillDto.records`,
+ * `LegalProfileDto.representatives`) oder hinter einem `allOf` an einem Feld
+ * (`SaveDashboardDto.layout`) blieb als `$ref` stehen — ein Verweis auf
+ * `#/components/…`, die das Modell nie zu sehen bekommt. Gemessen gegen die
+ * Produktions-API am 2026-09-11: 7 von 67 Werkzeugen mit Rumpf unvollständig.
+ * Deshalb jetzt rekursiv, durch `properties`, `items`,
+ * `additionalProperties`, `oneOf`/`anyOf`.
+ *
+ * `nullable: true` ist OpenAPI 3.0 und kein JSON Schema — ein Client, der das
+ * Eingabeschema streng prüft, lehnte `null` ab, obwohl die API es als
+ * „Einstellung entfernen“ versteht (`AutoApproveDto.set_budget_max_delta_micros`).
+ * Es wird zu `type: ["…", "null"]`.
+ *
+ * `kette` hält die Namen der gerade aufgelösten Komponenten: Ein Schema, das
+ * sich selbst enthält (ein Baum von Kategorien etwa), endet dort als offenes
+ * Objekt mit Hinweis, statt endlos zu laufen.
+ */
+function aufloese(
+  schema: Record<string, unknown> | undefined,
+  spec: OpenApiDocument,
+  kette: readonly string[] = [],
+): Record<string, unknown> | undefined {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
+
+  const ref = schema["$ref"];
+  if (typeof ref === "string") {
+    const name = ref.startsWith(SCHEMA_PRAEFIX) ? ref.slice(SCHEMA_PRAEFIX.length) : "";
+    const ziel = name ? spec.components?.schemas?.[name] : undefined;
+    // Ein Verweis ins Leere wird durchgereicht, nicht verschluckt: Dann steht
+    // im Werkzeug wenigstens der Verweis, und jemand sieht, was fehlt.
+    if (!ziel) return schema;
+    if (kette.includes(name) || kette.length >= 12) {
+      return { type: "object", description: `${name} (verschachtelt sich selbst; Felder wie eine Ebene höher)` };
+    }
+    // Was neben dem Verweis steht (OpenAPI 3.1 erlaubt eine Beschreibung
+    // daneben), gewinnt über das Ziel.
+    const { $ref: _verweis, ...daneben } = schema;
+    return aufloese({ ...ziel, ...daneben }, spec, [...kette, name]);
+  }
+
+  let out: Record<string, unknown> = { ...schema };
+
+  // `allOf` entsteht, wenn eine DTO erbt oder Swagger einen Verweis mit einer
+  // Beschreibung ergänzt (`layout: { description, allOf: [{ $ref }] }`).
+  const allOf = out["allOf"];
+  if (Array.isArray(allOf)) {
+    const { allOf: _teile, ...daneben } = out;
+    const teile = allOf.map((t) => aufloese(t as Record<string, unknown>, spec, kette) ?? {});
+    const properties: Record<string, unknown> = {};
+    const required: string[] = [];
+    let zusammen: Record<string, unknown> = {};
+    for (const teil of teile) {
+      Object.assign(properties, (teil["properties"] ?? {}) as Record<string, unknown>);
+      required.push(...(((teil["required"] as string[] | undefined) ?? [])));
+      zusammen = { ...zusammen, ...teil };
+    }
+    Object.assign(properties, (daneben["properties"] ?? {}) as Record<string, unknown>);
+    required.push(...(((daneben["required"] as string[] | undefined) ?? [])));
+    out = { ...zusammen, ...daneben };
+    if (Object.keys(properties).length) {
+      out["type"] = "object";
+      out["properties"] = properties;
+    }
+    if (required.length) out["required"] = [...new Set(required)];
+    else delete out["required"];
+    return aufloese(out, spec, kette);
+  }
+
+  const props = out["properties"];
+  if (props && typeof props === "object") {
+    const tief: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(props as Record<string, unknown>)) {
+      tief[k] = aufloese(v as Record<string, unknown>, spec, kette) ?? v;
+    }
+    out["properties"] = tief;
+  }
+  if (out["items"] && typeof out["items"] === "object") {
+    out["items"] = aufloese(out["items"] as Record<string, unknown>, spec, kette);
+  }
+  if (out["additionalProperties"] && typeof out["additionalProperties"] === "object") {
+    out["additionalProperties"] = aufloese(out["additionalProperties"] as Record<string, unknown>, spec, kette);
+  }
+  for (const k of ["oneOf", "anyOf"] as const) {
+    const liste = out[k];
+    if (Array.isArray(liste)) {
+      out[k] = liste.map((t) => aufloese(t as Record<string, unknown>, spec, kette) ?? t);
+    }
+  }
+
+  if (out["nullable"] === true) {
+    delete out["nullable"];
+    const typ = out["type"];
+    if (typeof typ === "string") out["type"] = [typ, "null"];
+    else if (Array.isArray(typ) && !typ.includes("null")) out["type"] = [...typ, "null"];
+  } else if (out["nullable"] === false) {
+    delete out["nullable"];
+  }
+
+  return out;
+}
+
+function jsonBodySchema(
+  op: OpenApiOperation,
+  spec: OpenApiDocument,
+): Record<string, unknown> | undefined {
+  const roh = op.requestBody?.content?.["application/json"]?.schema;
+  return aufloese(roh, spec);
+}
+
+/**
+ * Wer eine Operation überhaupt aufrufen kann, schreibt das Backend als
+ * Erweiterung an die Operation (`buildOpenApiDocument` in
+ * apps/backend/src/shared/openapi.ts, abgeleitet aus den Guards):
+ *
+ *  - `human_session`: nur eine Anmeldung im Dashboard, kein API-Schlüssel
+ *    (Schlüsselverwaltung, Kontolöschung, Einladungen, Bezahlung …).
+ *  - `staff`: nur das interne Team.
+ *
+ * Der MCP-Server arbeitet ausschliesslich mit API-Schlüsseln. Solche
+ * Werkzeuge anzubieten hiesse, dem Modell Knöpfe zu zeigen, die IMMER mit 403
+ * oder 404 antworten — es probiert sie trotzdem und berichtet dann, das
+ * Produkt sei kaputt.
+ */
+export const ACCESS_EXTENSION = "x-trackdolphin-requires";
+export type AccessRequirement = "human_session" | "staff";
+
+export function accessRequirements(op: OpenApiOperation): AccessRequirement[] {
+  const roh = (op as Record<string, unknown>)[ACCESS_EXTENSION];
+  return Array.isArray(roh) ? (roh.filter((x) => x === "human_session" || x === "staff") as AccessRequirement[]) : [];
 }
 
 export interface ToolsOptions {
@@ -105,6 +253,12 @@ export interface ToolsOptions {
    * weiter nutzen, nur die Liste soll kein Rauschen zeigen.
    */
   includeAuth?: boolean;
+  /**
+   * Nur Operationen, die ein API-Schlüssel aufrufen kann — ohne die mit
+   * `x-trackdolphin-requires` (siehe ACCESS_EXTENSION). Der MCP-Server setzt
+   * das; die Kommandozeile nicht, dort bleibt die Liste, wie sie war.
+   */
+  apiKeyOnly?: boolean;
 }
 
 export function toolsFromOpenApi(spec: OpenApiDocument, options?: ToolsOptions): McpTool[] {
@@ -119,14 +273,19 @@ export function toolsFromOpenApi(spec: OpenApiDocument, options?: ToolsOptions):
       // riefen ins Leere.
       if (!op?.operationId) continue;
       if (!options?.includeAuth && isAuthOperation(path, op)) continue;
+      if (options?.apiKeyOnly && accessRequirements(op).length > 0) continue;
 
       const properties: Record<string, unknown> = {};
       const required: string[] = [];
 
       for (const p of op.parameters ?? []) {
         if (p.in !== "path" && p.in !== "query") continue;
+        // Ein leeres Schema (`@ApiQuery` ohne `type`, z. B. `dry_run` an
+        // undoProjectBackfill) hiesse „beliebig“ — ein Abfrageparameter reist
+        // aber immer als Text. Ohne Typ also Text, wie ohne Schema.
+        const hatTyp = p.schema && ["type", "$ref", "enum", "oneOf", "anyOf", "allOf"].some((k) => k in p.schema!);
         properties[p.name] = {
-          ...(p.schema ?? { type: "string" }),
+          ...(hatTyp ? p.schema : { type: "string" }),
           ...(p.description ? { description: p.description } : {}),
         };
         if (p.required) required.push(p.name);
@@ -134,7 +293,7 @@ export function toolsFromOpenApi(spec: OpenApiDocument, options?: ToolsOptions):
 
       // Ein Modell kennt keine Pfad-, Abfrage- und Körperparameter, sondern
       // nur Argumente. Alles landet deshalb in einem Schema.
-      const body = jsonBodySchema(op);
+      const body = jsonBodySchema(op, spec);
       if (body && typeof body === "object") {
         const bodyProps = (body.properties ?? {}) as Record<string, unknown>;
         for (const [key, schema] of Object.entries(bodyProps)) properties[key] = schema;
@@ -216,7 +375,7 @@ export function buildRequest(
   }
 
   // Alles, was weder Pfad noch Abfrage ist, gehört in den Körper.
-  const bodySchema = jsonBodySchema(op);
+  const bodySchema = jsonBodySchema(op, spec);
   let body: string | undefined;
   if (bodySchema) {
     const payload: Record<string, unknown> = {};

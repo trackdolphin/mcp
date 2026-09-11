@@ -1,6 +1,17 @@
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createTrackdolphinServer, loadSpec, toolsFromOpenApi, type OpenApiDocument, type McpTool } from "./core.ts";
+import {
+  VERSION,
+  createTrackdolphinServer,
+  loadAccessScope,
+  loadSpec,
+  toolsFromOpenApi,
+  werkzeugeFuerZugang,
+  zugangsHinweis,
+  type OpenApiDocument,
+  type McpTool,
+  type ZugangsStand,
+} from "./core.ts";
 
 /**
  * MCP-Server für Trackdolphin — gehosteter Weg über Streamable HTTP.
@@ -42,7 +53,8 @@ let tools: McpTool[];
 
 try {
   spec = await loadSpec(API_BASE_URL);
-  tools = toolsFromOpenApi(spec);
+  // Nur, was ein API-Schlüssel aufrufen kann — siehe index.ts.
+  tools = toolsFromOpenApi(spec, { apiKeyOnly: true });
 } catch (e) {
   process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
   process.exit(1);
@@ -53,6 +65,20 @@ function extractToken(header: string | string[] | undefined): string | null {
   const value = Array.isArray(header) ? header[0] : header;
   const token = value?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
   return token || null;
+}
+
+/** Obergrenze für einen JSON-RPC-Rumpf. Werkzeugargumente sind klein; 4 MB lassen einen grossen Backfill durch. */
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
+
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const teile: Buffer[] = [];
+  let groesse = 0;
+  for await (const teil of req) {
+    groesse += (teil as Buffer).length;
+    if (groesse > MAX_BODY_BYTES) throw new Error("Anfrage zu gross.");
+    teile.push(teil as Buffer);
+  }
+  return JSON.parse(Buffer.concat(teile).toString("utf8"));
 }
 
 function sendJsonRpcError(res: ServerResponse, status: number, message: string): void {
@@ -68,7 +94,7 @@ const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResp
   // besitzen müssen, um zu sehen, ob der Prozess lebt.
   if (url.pathname === "/healthz") {
     res.writeHead(200, { "Content-Type": "application/json" }).end(
-      JSON.stringify({ ok: true, tools: tools.length }),
+      JSON.stringify({ ok: true, version: VERSION, tools: tools.length }),
     );
     return;
   }
@@ -99,8 +125,33 @@ const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResp
     return;
   }
 
+  let body: unknown;
   try {
-    const server = createTrackdolphinServer({ spec, tools, token, baseUrl: API_BASE_URL });
+    body = await readJsonBody(req);
+  } catch (e) {
+    res.writeHead(400, { "Content-Type": "application/json" }).end(
+      JSON.stringify({ jsonrpc: "2.0", error: { code: -32700, message: e instanceof Error ? e.message : "Parse error" }, id: null }),
+    );
+    return;
+  }
+
+  try {
+    // Die Rechte des Schlüssels nur dort abfragen, wo sie etwas ändern: beim
+    // initialize (Zugangssatz) und bei tools/list (gefilterte Liste). Ein
+    // Werkzeugaufruf braucht sie nicht — das Backend setzt die Rechte
+    // ohnehin durch —, und jeder Aufruf einen zweiten Backend-Aufruf wäre
+    // doppelte Last für nichts. Gespeichert wird nichts (siehe oben).
+    const methoden = (Array.isArray(body) ? body : [body]).map((m) => (m as { method?: unknown } | null)?.method);
+    const brauchtZugang = methoden.includes("initialize") || methoden.includes("tools/list");
+    const zugang: ZugangsStand = brauchtZugang ? await loadAccessScope(spec, API_BASE_URL, token) : { scope: null };
+
+    const server = createTrackdolphinServer({
+      spec,
+      tools: werkzeugeFuerZugang(tools, zugang.scope),
+      token,
+      baseUrl: API_BASE_URL,
+      instructions: brauchtZugang ? zugangsHinweis(zugang.scope, zugang.fehler) : undefined,
+    });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
     res.on("close", () => {
@@ -109,7 +160,7 @@ const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResp
     });
 
     await server.connect(transport);
-    await transport.handleRequest(req, res);
+    await transport.handleRequest(req, res, body);
   } catch (e) {
     process.stderr.write(`${e instanceof Error ? (e.stack ?? e.message) : String(e)}\n`);
     if (!res.headersSent) {

@@ -56,6 +56,20 @@ cohorts, imports and API keys.
 That is the point of API-first: a new endpoint is a new tool the same day, with
 no second list to keep in sync and no chance of the two drifting apart.
 
+## Access: read or write
+
+On start the server asks the API what its token may do (`getAccessScope`) and
+says so in its MCP `instructions`, in one sentence: *"This access may read and
+write in organisation X"*, or *"read only"*, or which shared projects are
+view-only. A read-only access does not see write tools at all. Tools that no
+API token can ever call (creating API keys, inviting team members, billing,
+the internal admin console) are left out, so the agent is never offered a
+button that always answers 403.
+
+Every tool carries MCP annotations derived from its HTTP method:
+`readOnlyHint` for GET, `destructiveHint` for DELETE, `idempotentHint` for
+GET/PUT/PATCH/DELETE.
+
 ## Configuration
 
 | Variable | Meaning | Default |
@@ -67,6 +81,27 @@ no second list to keep in sync and no chance of the two drifting apart.
 
 Node.js 22 or newer. The server speaks stdio only, so it needs a client on the
 other end — running it in a container without one closes the input immediately.
+
+## Changelog
+
+### 0.1.4
+
+- **Input schemas are complete.** 0.1.3 showed no body fields for any tool, so
+  arrays and booleans reached the API as text (`konten must be an array`).
+  Request bodies are now resolved through `$ref`, `allOf`, list items and
+  nested objects; `nullable` becomes JSON Schema `type: [..., "null"]`.
+  Checked against the production API: 66 of 67 tools with a body complete
+  (the last, `saveConsentBanner`, is fixed in the API itself).
+- **Knows its access.** `instructions` state whether the token may read or
+  write, and where; read-only access hides write tools; tools that need a
+  dashboard login or staff rights are no longer listed (needs an API that
+  publishes `getAccessScope` and `x-trackdolphin-requires`; older APIs get
+  the full list and an honest "access unknown").
+- The server reports its real version instead of `0.1.0`.
+
+### 0.1.3
+
+- Tools carry MCP annotations; auth endpoints are not offered as tools.
 
 ## Support
 
